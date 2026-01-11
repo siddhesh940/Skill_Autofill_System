@@ -1,5 +1,6 @@
 'use client';
 
+import { getPlatformErrorMessage, logPlatformError } from '@/lib/platform-utils';
 import { useRef, useState } from 'react';
 
 interface ProfileInputProps {
@@ -32,6 +33,19 @@ export default function ProfileInput({
     const file = event.target.files?.[0];
     if (!file) return;
 
+    // Validate file before upload
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      setUploadError('File is too large. Please use a file smaller than 10MB.');
+      return;
+    }
+
+    const allowedTypes = ['application/pdf', 'text/plain'];
+    if (!allowedTypes.includes(file.type)) {
+      setUploadError('Please upload a PDF or TXT file only.');
+      return;
+    }
+
     setIsUploading(true);
     setUploadError(null);
     setUploadedFileName(null);
@@ -47,13 +61,38 @@ export default function ProfileInput({
         body: formData,
       });
 
+      // Handle network errors specifically
+      if (!response) {
+        throw new Error('NETWORK_ERROR');
+      }
+
       const data = await response.json();
 
       // Handle failed parsing
       if (!response.ok || data.parseQuality === 'failed') {
-        const errorMsg = data.error || 'Failed to parse file';
-        const suggestion = data.suggestion || 'Please paste your resume text manually.';
-        throw new Error(`${errorMsg} ${suggestion}`);
+        // Log technical details for debugging
+        console.error('File parse error:', {
+          status: response.status,
+          error: data.error,
+          filename: file.name,
+          fileSize: file.size,
+          fileType: file.type
+        });
+        
+        // Provide user-friendly error messages
+        let errorMessage = 'Could not read the file properly.';
+        
+        if (response.status === 413) {
+          errorMessage = 'File is too large to process.';
+        } else if (response.status >= 500) {
+          errorMessage = 'Server is having issues processing files.';
+        } else if (data.error?.includes('corrupted') || data.error?.includes('encrypted')) {
+          errorMessage = 'File appears to be corrupted or password-protected.';
+        } else if (data.error?.includes('image-based') || data.error?.includes('scanned')) {
+          errorMessage = 'This appears to be a scanned PDF. Text-based PDFs work better.';
+        }
+        
+        throw new Error(errorMessage);
       }
 
       // Handle successful or partial parsing
@@ -74,11 +113,50 @@ export default function ProfileInput({
           });
         }
       } else {
-        throw new Error('No text extracted from file. Please paste your resume text manually.');
+        throw new Error('No readable text found in the file.');
       }
     } catch (error) {
-      console.error('Upload error:', error);
-      setUploadError(error instanceof Error ? error.message : 'Failed to upload file');
+      // Log platform-aware error for debugging
+      logPlatformError(error, 'file-upload');
+      
+      // Set user-friendly error messages
+      let userMessage = 'File upload failed. Please paste your resume text directly below.';
+      
+      if (error instanceof Error) {
+        switch (error.message) {
+          case 'NETWORK_ERROR':
+          case 'Failed to fetch':
+            userMessage = getPlatformErrorMessage(
+              'Connection issue.',
+              'network'
+            ) + ' You can paste your resume text directly below.';
+            break;
+          case 'File is too large to process.':
+          case 'File appears to be corrupted or password-protected.':
+          case 'This appears to be a scanned PDF. Text-based PDFs work better.':
+          case 'No readable text found in the file.':
+            userMessage = getPlatformErrorMessage(
+              error.message,
+              'upload'
+            );
+            break;
+          default:
+            if (error.message.includes('fetch') || error.message.includes('network')) {
+              userMessage = getPlatformErrorMessage(
+                'Upload failed.',
+                'network'
+              ) + ' You can paste your resume text directly below.';
+            } else if (error.message.length < 100) {
+              userMessage = getPlatformErrorMessage(
+                error.message,
+                'upload'
+              );
+            }
+            break;
+        }
+      }
+      
+      setUploadError(userMessage);
     } finally {
       setIsUploading(false);
       // Reset file input
@@ -233,6 +311,8 @@ JavaScript, TypeScript, React, Node.js, PostgreSQL, AWS"
 
             <p className="mt-2 text-xs text-slate-500">
               Supports PDF and TXT files. For best results, use text-based PDFs.
+              <br />
+              <span className="text-yellow-400">📱 Mobile tip: If upload fails, paste resume text directly above.</span>
             </p>
           </div>
         </div>

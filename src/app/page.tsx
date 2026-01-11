@@ -1,11 +1,13 @@
 'use client';
 
 import AnalysisResults from '@/components/AnalysisResults';
+import ErrorMessage from '@/components/ErrorMessage';
 import Header from '@/components/Header';
 import JDInput from '@/components/JDInput';
 import LoadingState from '@/components/LoadingState';
 import ProfileInput from '@/components/ProfileInput';
-import type { FullAnalysisResponse } from '@/types';
+import { logPlatformError } from '@/lib';
+import { FullAnalysisResponse } from '@/types';
 import { useState } from 'react';
 
 export default function HomePage() {
@@ -17,13 +19,30 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
-    if (!jdText) {
-      setError('Please provide a job description');
+    // Enhanced input validation
+    const jdTrimmed = jdText.trim();
+    const resumeTrimmed = resumeText.trim();
+    const githubTrimmed = githubUsername.trim();
+
+    // Validate job description
+    if (!jdTrimmed) {
+      setError('Please add a job description before analyzing.');
       return;
     }
 
-    if (!resumeText && !githubUsername) {
-      setError('Please provide either a resume or GitHub username');
+    if (jdTrimmed.length < 50) {
+      setError('Please provide a more detailed job description (at least 50 characters).');
+      return;
+    }
+
+    // Validate profile data
+    if (!resumeTrimmed && !githubTrimmed) {
+      setError('Please add job description and resume before analyzing.');
+      return;
+    }
+
+    if (resumeTrimmed && resumeTrimmed.length < 100) {
+      setError('Please provide a more detailed resume (at least 100 characters) or GitHub username.');
       return;
     }
 
@@ -37,23 +56,69 @@ export default function HomePage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          jd_text: jdText,
-          resume_text: resumeText || undefined,
-          github_username: githubUsername || undefined,
+          jd_text: jdTrimmed,
+          resume_text: resumeTrimmed || undefined,
+          github_username: githubTrimmed || undefined,
           available_hours_per_week: 10,
         }),
       });
 
+      // Handle network errors
+      if (!response) {
+        throw new Error('NETWORK_ERROR');
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Analysis failed');
+        // Log technical details for debugging
+        console.error('API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: data.error,
+          url: response.url
+        });
+        
+        // Provide user-friendly error messages
+        if (response.status >= 400 && response.status < 500) {
+          throw new Error('VALIDATION_ERROR');
+        } else if (response.status >= 500) {
+          throw new Error('SERVER_ERROR');
+        }
+        
+        throw new Error('UNKNOWN_ERROR');
       }
 
       setResults(data.data);
       setStep('results');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      // Log platform-aware error for debugging
+      logPlatformError(err, 'main-analysis');
+      
+      // Set user-friendly error messages
+      let userMessage = 'Something went wrong on our side. Please try again in a moment.';
+      
+      if (err instanceof Error) {
+        switch (err.message) {
+          case 'NETWORK_ERROR':
+          case 'Failed to fetch':
+            userMessage = 'Unable to connect. Please check your internet connection and try again.';
+            break;
+          case 'VALIDATION_ERROR':
+            userMessage = 'Please check your inputs and try again.';
+            break;
+          case 'SERVER_ERROR':
+            userMessage = 'Our servers are having issues. Please try again in a moment.';
+            break;
+          default:
+            if (err.message.includes('fetch')) {
+              userMessage = 'Connection issue. Please try again.';
+            }
+            break;
+        }
+      }
+      
+      setError(userMessage);
       setStep('input');
     }
   };
@@ -96,15 +161,14 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Error Alert */}
+        {/* Enhanced Error Alert */}
         {error && (
-          <div className="max-w-4xl mx-auto mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 animate-fade-in">
-            <div className="flex items-center gap-2">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span>{error}</span>
-            </div>
+          <div className="max-w-4xl mx-auto mb-6">
+            <ErrorMessage 
+              message={error} 
+              onDismiss={() => setError(null)} 
+              type="error"
+            />
           </div>
         )}
 
@@ -138,12 +202,27 @@ export default function HomePage() {
             <div className="text-center pt-6">
               <button
                 onClick={handleAnalyze}
-                disabled={!jdText || (!resumeText && !githubUsername)}
+                disabled={
+                  !jdText.trim() || 
+                  jdText.trim().length < 50 || 
+                  (!resumeText.trim() && !githubUsername.trim()) || 
+                  (!!resumeText.trim() && resumeText.trim().length < 100 && !githubUsername.trim())
+                }
                 className="btn-primary text-lg px-10 py-4 animate-pulse-glow disabled:animate-none disabled:opacity-50 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/30 transition-shadow"
               >
                 🚀 Analyze &amp; Generate
               </button>
               <p className="mt-3 text-xs text-slate-500">Takes about 10-15 seconds</p>
+              {/* Validation hints */}
+              {(!jdText.trim() || jdText.trim().length < 50) && (
+                <p className="mt-2 text-xs text-yellow-400">Please add a detailed job description (50+ characters)</p>
+              )}
+              {(!resumeText.trim() && !githubUsername.trim()) && jdText.trim().length >= 50 && (
+                <p className="mt-2 text-xs text-yellow-400">Please add resume text or GitHub username</p>
+              )}
+              {resumeText.trim() && resumeText.trim().length < 100 && !githubUsername.trim() && (
+                <p className="mt-2 text-xs text-yellow-400">Resume needs more detail (100+ characters) or add GitHub username</p>
+              )}
             </div>
           </div>
         )}

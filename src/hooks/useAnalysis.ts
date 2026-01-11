@@ -1,11 +1,11 @@
 'use client';
 
 import type {
-    FullAnalysisResponse,
-    LearningRoadmap,
-    ParsedJobDescription,
-    SkillGapAnalysis,
-    UserSkillProfile
+  FullAnalysisResponse,
+  LearningRoadmap,
+  ParsedJobDescription,
+  SkillGapAnalysis,
+  UserSkillProfile
 } from '@/types';
 import { useCallback, useState } from 'react';
 
@@ -56,13 +56,39 @@ export function useAnalysis(): UseAnalysisReturn {
         body: JSON.stringify({ jd_text: jdText }),
       });
 
+      if (!response) {
+        throw new Error('NETWORK_ERROR');
+      }
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      
+      if (!response.ok) {
+        console.error('JD extraction error:', { status: response.status, error: data.error });
+        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
+      }
 
       setState(prev => ({ ...prev, jobData: data.data, isLoading: false }));
       return data.data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to extract job description');
+      console.error('JD extraction failed:', err);
+      
+      let userMessage = 'Failed to process job description. Please try again.';
+      if (err instanceof Error) {
+        switch (err.message) {
+          case 'NETWORK_ERROR':
+          case 'Failed to fetch':
+            userMessage = 'Connection issue. Please check your internet and try again.';
+            break;
+          case 'SERVER_ERROR':
+            userMessage = 'Our servers are having issues. Please try again in a moment.';
+            break;
+          case 'VALIDATION_ERROR':
+            userMessage = 'Please check your job description and try again.';
+            break;
+        }
+      }
+      
+      setError(userMessage);
       return null;
     }
   }, []);
@@ -79,13 +105,39 @@ export function useAnalysis(): UseAnalysisReturn {
         body: JSON.stringify({ resume_text: resumeText, github_username: githubUsername }),
       });
 
+      if (!response) {
+        throw new Error('NETWORK_ERROR');
+      }
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      
+      if (!response.ok) {
+        console.error('Profile analysis error:', { status: response.status, error: data.error });
+        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
+      }
 
       setState(prev => ({ ...prev, profileData: data.data, isLoading: false }));
       return data.data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to analyze profile');
+      console.error('Profile analysis failed:', err);
+      
+      let userMessage = 'Failed to analyze your profile. Please try again.';
+      if (err instanceof Error) {
+        switch (err.message) {
+          case 'NETWORK_ERROR':
+          case 'Failed to fetch':
+            userMessage = 'Connection issue. Please check your internet and try again.';
+            break;
+          case 'SERVER_ERROR':
+            userMessage = 'Our servers are having issues. Please try again in a moment.';
+            break;
+          case 'VALIDATION_ERROR':
+            userMessage = 'Please check your resume or GitHub username and try again.';
+            break;
+        }
+      }
+      
+      setError(userMessage);
       return null;
     }
   }, []);
@@ -102,13 +154,39 @@ export function useAnalysis(): UseAnalysisReturn {
         body: JSON.stringify({ job_data: jobData, user_skills: userSkills }),
       });
 
+      if (!response) {
+        throw new Error('NETWORK_ERROR');
+      }
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      
+      if (!response.ok) {
+        console.error('Skill gap analysis error:', { status: response.status, error: data.error });
+        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
+      }
 
       setState(prev => ({ ...prev, skillGap: data.data, isLoading: false }));
       return data.data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to analyze skill gap');
+      console.error('Skill gap analysis failed:', err);
+      
+      let userMessage = 'Failed to analyze skill gap. Please try again.';
+      if (err instanceof Error) {
+        switch (err.message) {
+          case 'NETWORK_ERROR':
+          case 'Failed to fetch':
+            userMessage = 'Connection issue. Please check your internet and try again.';
+            break;
+          case 'SERVER_ERROR':
+            userMessage = 'Our servers are having issues. Please try again in a moment.';
+            break;
+          case 'VALIDATION_ERROR':
+            userMessage = 'Please check your inputs and try again.';
+            break;
+        }
+      }
+      
+      setError(userMessage);
       return null;
     }
   }, []);

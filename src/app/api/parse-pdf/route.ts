@@ -1,8 +1,8 @@
 import {
-    cleanExtractedText,
-    formatResumeForDisplay,
-    isTextCorrupted,
-    parseResumeText,
+  cleanExtractedText,
+  formatResumeForDisplay,
+  isTextCorrupted,
+  parseResumeText,
 } from '@/lib/nlp/resume-parser';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -234,11 +234,36 @@ export async function POST(request: NextRequest) {
     );
 
   } catch (error) {
-    console.error('Error parsing file:', error);
+    // Log detailed error for debugging
+    console.error('Error parsing file:', {
+      error: error instanceof Error ? error.message : error,
+      stack: error instanceof Error ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Return user-friendly error message
+    let userMessage = 'File processing failed. Please paste your resume text directly.';
+    let errorType = 'processing';
+    
+    if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        userMessage = 'File processing timed out. Please try a smaller file or paste text directly.';
+        errorType = 'timeout';
+      } else if (error.message.includes('size') || error.message.includes('large')) {
+        userMessage = 'File is too large. Please try a smaller file or paste text directly.';
+        errorType = 'size';
+      } else if (error.message.includes('network') || error.message.includes('fetch')) {
+        userMessage = 'Network issue. Please try again or paste text directly.';
+        errorType = 'network';
+      }
+    }
+    
     return NextResponse.json(
       { 
-        error: 'Failed to parse file. Please paste text manually.',
-        details: error instanceof Error ? error.message : 'Unknown error',
+        error: userMessage,
+        type: errorType,
+        suggestion: 'If upload fails on mobile, paste resume text directly.',
+        parseQuality: 'failed'
       },
       { status: 500 }
     );

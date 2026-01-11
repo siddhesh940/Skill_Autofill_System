@@ -1,5 +1,6 @@
 // Component exports
 export { default as AnalysisResults } from './AnalysisResults';
+export { default as ErrorMessage } from './ErrorMessage';
 export { default as Header } from './Header';
 export { default as JDInput } from './JDInput';
 export { default as LoadingState } from './LoadingState';

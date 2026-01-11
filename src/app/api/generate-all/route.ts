@@ -1,14 +1,14 @@
 import {
-    analyzeGitHubData,
-    analyzeSkillGap,
-    combineSkills,
-    extractJobDescription,
-    generateGitHubTasks,
-    generatePortfolioUpdates,
-    generateRoadmap,
-    improveResume,
-    parseResumeText,
-    recommendProjects,
+  analyzeGitHubData,
+  analyzeSkillGap,
+  combineSkills,
+  extractJobDescription,
+  generateGitHubTasks,
+  generatePortfolioUpdates,
+  generateRoadmap,
+  improveResume,
+  parseResumeText,
+  recommendProjects,
 } from '@/lib/nlp';
 import { fetchCompleteGitHubProfile } from '@/services/github';
 import { NextRequest, NextResponse } from 'next/server';
@@ -25,17 +25,37 @@ export async function POST(request: NextRequest) {
       original_bullets = [],
     } = body;
 
-    // Validate required inputs
-    if (!jd_text && !jd_url) {
+    // Enhanced input validation
+    const jdTrimmed = jd_text?.trim();
+    const resumeTrimmed = resume_text?.trim();
+    const githubTrimmed = github_username?.trim();
+
+    // Validate job description
+    if (!jdTrimmed && !jd_url) {
       return NextResponse.json(
-        { error: 'Either jd_text or jd_url is required' },
+        { error: 'Job description is required', type: 'validation' },
         { status: 400 }
       );
     }
 
-    if (!resume_text && !github_username) {
+    if (jdTrimmed && jdTrimmed.length < 50) {
       return NextResponse.json(
-        { error: 'Either resume_text or github_username is required' },
+        { error: 'Job description must be at least 50 characters', type: 'validation' },
+        { status: 400 }
+      );
+    }
+
+    // Validate profile input
+    if (!resumeTrimmed && !githubTrimmed) {
+      return NextResponse.json(
+        { error: 'Either resume text or GitHub username is required', type: 'validation' },
+        { status: 400 }
+      );
+    }
+
+    if (resumeTrimmed && resumeTrimmed.length < 100) {
+      return NextResponse.json(
+        { error: 'Resume text must be at least 100 characters', type: 'validation' },
         { status: 400 }
       );
     }
@@ -352,9 +372,19 @@ export async function POST(request: NextRequest) {
       data: response,
     });
   } catch (error) {
-    console.error('Error in generate-all:', error);
+    // Log detailed error for debugging
+    console.error('Error in generate-all:', {
+      error: error instanceof Error ? error.message : error,
+      stack: error instanceof Error ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Return user-friendly error message
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { 
+        error: 'Something went wrong while processing your request. Please try again.', 
+        type: 'server'
+      },
       { status: 500 }
     );
   }
