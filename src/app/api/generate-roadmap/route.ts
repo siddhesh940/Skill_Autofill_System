@@ -2,9 +2,21 @@ import { generateRoadmap } from '@/lib/nlp';
 import type { MissingSkill } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
     const { missing_skills, available_hours_per_week } = body as {
       missing_skills: MissingSkill[];
       available_hours_per_week?: number;
@@ -12,7 +24,7 @@ export async function POST(request: NextRequest) {
 
     if (!missing_skills || !Array.isArray(missing_skills)) {
       return NextResponse.json(
-        { error: 'missing_skills array is required' },
+        { error: 'Skills data is required' },
         { status: 400 }
       );
     }
@@ -30,7 +42,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error generating roadmap:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Roadmap generation could not be completed. Please try again.' },
       { status: 500 }
     );
   }

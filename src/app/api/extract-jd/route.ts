@@ -1,27 +1,40 @@
 import { extractJobDescription, scrapeJobUrl } from '@/lib/nlp';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { text, url } = body;
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
+    const { text, url } = body as { text?: string; url?: string };
 
     if (!text && !url) {
       return NextResponse.json(
-        { error: 'Either text or url is required' },
+        { error: 'Please provide job description text or URL' },
         { status: 400 }
       );
     }
 
-    let rawText = text;
+    let rawText = text || '';
 
     // If URL provided, scrape it first
     if (url && !text) {
       try {
         rawText = await scrapeJobUrl(url);
       } catch (error) {
+        console.warn('URL scraping failed:', error);
         return NextResponse.json(
-          { error: `Failed to fetch URL: ${error}` },
+          { error: 'Could not fetch job posting from URL. Please paste the job description directly.' },
           { status: 400 }
         );
       }
@@ -37,7 +50,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error extracting JD:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Could not process job description. Please try again.' },
       { status: 500 }
     );
   }

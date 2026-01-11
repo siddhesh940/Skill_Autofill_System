@@ -1,13 +1,19 @@
 import {
-  cleanExtractedText,
-  formatResumeForDisplay,
-  isTextCorrupted,
-  parseResumeText,
+    cleanExtractedText,
+    formatResumeForDisplay,
+    isTextCorrupted,
+    parseResumeText,
 } from '@/lib/nlp/resume-parser';
 import { NextRequest, NextResponse } from 'next/server';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PDFParser = require('pdf2json');
+
+// Vercel serverless max execution time
+export const maxDuration = 60; // 60 seconds
+
+// Maximum file size (8MB - safe for Vercel)
+const MAX_FILE_SIZE = 8 * 1024 * 1024;
 
 /**
  * Safely decode URI-encoded text, handling malformed sequences
@@ -44,18 +50,25 @@ function safeDecodeURI(str: string): string {
 }
 
 /**
- * Extract text from PDF using pdf2json
+ * Extract text from PDF using pdf2json with timeout protection
  */
 async function extractPdfText(buffer: Buffer): Promise<{ text: string; pages: number }> {
   return new Promise((resolve, reject) => {
+    // Timeout protection - 30 seconds max for PDF parsing
+    const timeout = setTimeout(() => {
+      reject(new Error('PDF parsing timed out'));
+    }, 30000);
+
     const pdfParser = new PDFParser(null, true); // true = suppress warnings
     
     pdfParser.on('pdfParser_dataError', (errData: { parserError: Error }) => {
+      clearTimeout(timeout);
       console.error('PDF Parse Error:', errData.parserError);
       reject(errData.parserError);
     });
     
     pdfParser.on('pdfParser_dataReady', (pdfData: { Pages: Array<{ Texts: Array<{ R: Array<{ T: string }> }> }> }) => {
+      clearTimeout(timeout);
       try {
         const pages = pdfData.Pages || [];
         const textParts: string[] = [];
@@ -80,7 +93,6 @@ async function extractPdfText(buffer: Buffer): Promise<{ text: string; pages: nu
         
         const fullText = textParts.join('\n\n');
         console.log('Extracted text length:', fullText.length);
-        console.log('First 500 chars:', fullText.substring(0, 500));
         
         resolve({
           text: fullText,
@@ -98,29 +110,90 @@ async function extractPdfText(buffer: Buffer): Promise<{ text: string; pages: nu
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
+    // Check content-length header first (before reading body)
+    const contentLength = request.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { 
+          error: 'File is too large. Please use a file smaller than 8MB.',
+          suggestion: 'Try compressing your PDF or paste your resume text directly.',
+          parseQuality: 'failed'
+        },
+        { status: 413 }
+      );
+    }
+
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (formError) {
+      console.error('FormData parsing error:', formError);
+      return NextResponse.json(
+        { 
+          error: 'Could not process the uploaded file.',
+          suggestion: 'Please paste your resume text directly instead.',
+          parseQuality: 'failed'
+        },
+        { status: 400 }
+      );
+    }
+
     const file = formData.get('file') as File | null;
 
     if (!file) {
       return NextResponse.json(
-        { error: 'No file provided' },
+        { 
+          error: 'No file received.',
+          suggestion: 'Please select a file and try again.',
+          parseQuality: 'failed'
+        },
         { status: 400 }
+      );
+    }
+
+    // Verify file size again (mobile browsers sometimes don't report content-length correctly)
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { 
+          error: 'File is too large. Please use a file smaller than 8MB.',
+          suggestion: 'Try compressing your PDF or paste your resume text directly.',
+          parseQuality: 'failed'
+        },
+        { status: 413 }
       );
     }
 
     // Check file type
     const allowedTypes = ['application/pdf', 'text/plain'];
+    // Be more lenient with MIME types (mobile browsers can be inconsistent)
+    const fileExtension = file.name.toLowerCase().split('.').pop();
+    const isValidExtension = fileExtension === 'pdf' || fileExtension === 'txt';
     
-    if (!allowedTypes.includes(file.type)) {
+    if (!allowedTypes.includes(file.type) && !isValidExtension) {
       return NextResponse.json(
-        { error: 'Invalid file type. Please upload PDF or TXT file.' },
+        { 
+          error: 'Please upload a PDF or TXT file.',
+          suggestion: 'Only .pdf and .txt files are supported.',
+          parseQuality: 'failed'
+        },
         { status: 400 }
       );
     }
 
     // For text files, just read the content
-    if (file.type === 'text/plain') {
-      const rawText = await file.text();
+    if (file.type === 'text/plain' || fileExtension === 'txt') {
+      let rawText: string;
+      try {
+        rawText = await file.text();
+      } catch {
+        return NextResponse.json({
+          success: false,
+          error: 'Could not read the text file.',
+          suggestion: 'Please paste your resume text directly.',
+          parseQuality: 'failed',
+        }, { status: 422 });
+      }
+      
       const parsed = parseResumeText(rawText);
       const displayText = formatResumeForDisplay(parsed);
 
@@ -143,8 +216,19 @@ export async function POST(request: NextRequest) {
     }
 
     // For PDF files
-    if (file.type === 'application/pdf') {
-      const arrayBuffer = await file.arrayBuffer();
+    if (file.type === 'application/pdf' || fileExtension === 'pdf') {
+      let arrayBuffer: ArrayBuffer;
+      try {
+        arrayBuffer = await file.arrayBuffer();
+      } catch {
+        return NextResponse.json({
+          success: false,
+          error: 'Could not read the PDF file.',
+          suggestion: 'Please paste your resume text directly.',
+          parseQuality: 'failed',
+        }, { status: 422 });
+      }
+      
       const buffer = Buffer.from(arrayBuffer);
 
       // Extract text from PDF
@@ -155,27 +239,23 @@ export async function POST(request: NextRequest) {
         const result = await extractPdfText(buffer);
         extractedText = result.text;
         pageCount = result.pages;
-        
-        console.log(`PDF extracted: ${pageCount} pages, ${extractedText.length} chars`);
-        
-        // Debug: Log first 500 chars
-        console.log('First 500 chars:', extractedText.substring(0, 500));
       } catch (pdfError) {
         console.error('PDF parse error:', pdfError);
+        // Don't expose internal error - provide user-friendly message
         return NextResponse.json({
           success: false,
-          error: 'Failed to read PDF file. It may be corrupted or encrypted.',
-          suggestion: 'Please paste your resume text manually.',
+          error: 'Could not read this PDF file.',
+          suggestion: 'Please paste your resume text directly instead.',
           parseQuality: 'failed',
         }, { status: 422 });
       }
 
-      // Check if we got any text
-      if (!extractedText || extractedText.trim().length < 50) {
+      // Check if we got any text - be more lenient (30 chars minimum)
+      if (!extractedText || extractedText.trim().length < 30) {
         return NextResponse.json({
           success: false,
-          error: 'Could not extract text from PDF. The PDF may be image-based (scanned).',
-          suggestion: 'Please paste your resume text manually or use a text-based PDF.',
+          error: 'This PDF appears to be image-based (scanned).',
+          suggestion: 'Please paste your resume text directly instead.',
           parseQuality: 'failed',
         }, { status: 422 });
       }
@@ -183,12 +263,39 @@ export async function POST(request: NextRequest) {
       // Clean the extracted text
       const cleanedText = cleanExtractedText(extractedText);
 
-      // Check for corruption
+      // Check for corruption - but be lenient for partial extractions
       if (isTextCorrupted(cleanedText)) {
+        // Try to salvage what we can instead of failing completely
+        const salvaged = cleanedText
+          .replace(/[^\x20-\x7E\n\r\t]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        if (salvaged.length > 50) {
+          // Use salvaged text but warn user
+          return NextResponse.json({
+            success: true,
+            text: salvaged,
+            structured: {
+              summary: '',
+              skills: [],
+              experience: [],
+              projects: [],
+              education: [],
+              certifications: [],
+            },
+            parseQuality: 'partial',
+            warnings: ['Some content may not have been extracted correctly. Please review and edit as needed.'],
+            filename: file.name,
+            type: file.type,
+            pageCount,
+          });
+        }
+        
         return NextResponse.json({
           success: false,
-          error: 'The extracted text appears to be corrupted or unreadable.',
-          suggestion: 'Please paste your resume text manually.',
+          error: 'The PDF text could not be read properly.',
+          suggestion: 'Please paste your resume text directly instead.',
           parseQuality: 'failed',
         }, { status: 422 });
       }
@@ -196,14 +303,26 @@ export async function POST(request: NextRequest) {
       // Parse into structured format
       const parsed = parseResumeText(cleanedText);
 
-      // If parsing failed
+      // If parsing failed completely, still return the raw text so user can edit it
       if (parsed.parseQuality === 'failed') {
+        // Return partial success with raw text
         return NextResponse.json({
-          success: false,
-          error: parsed.warnings[0] || 'Failed to parse resume content.',
-          suggestion: 'Please paste your resume text manually.',
-          parseQuality: 'failed',
-        }, { status: 422 });
+          success: true,
+          text: cleanedText,
+          structured: {
+            summary: '',
+            skills: [],
+            experience: [],
+            projects: [],
+            education: [],
+            certifications: [],
+          },
+          parseQuality: 'partial',
+          warnings: ['Resume structure could not be detected. Please review the extracted text above.'],
+          filename: file.name,
+          type: file.type,
+          pageCount,
+        });
       }
 
       // Format for display
@@ -229,40 +348,26 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: 'Unsupported file type' },
+      { 
+        error: 'Please upload a PDF or TXT file.',
+        suggestion: 'Only .pdf and .txt files are supported.',
+        parseQuality: 'failed'
+      },
       { status: 400 }
     );
 
   } catch (error) {
-    // Log detailed error for debugging
+    // Log for debugging but never expose to user
     console.error('Error parsing file:', {
-      error: error instanceof Error ? error.message : error,
-      stack: error instanceof Error ? error.stack : undefined,
+      error: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
     });
     
-    // Return user-friendly error message
-    let userMessage = 'File processing failed. Please paste your resume text directly.';
-    let errorType = 'processing';
-    
-    if (error instanceof Error) {
-      if (error.message.includes('timeout')) {
-        userMessage = 'File processing timed out. Please try a smaller file or paste text directly.';
-        errorType = 'timeout';
-      } else if (error.message.includes('size') || error.message.includes('large')) {
-        userMessage = 'File is too large. Please try a smaller file or paste text directly.';
-        errorType = 'size';
-      } else if (error.message.includes('network') || error.message.includes('fetch')) {
-        userMessage = 'Network issue. Please try again or paste text directly.';
-        errorType = 'network';
-      }
-    }
-    
+    // Always return user-friendly error - never expose internal details
     return NextResponse.json(
       { 
-        error: userMessage,
-        type: errorType,
-        suggestion: 'If upload fails on mobile, paste resume text directly.',
+        error: 'File processing encountered an issue.',
+        suggestion: 'Please paste your resume text directly instead.',
         parseQuality: 'failed'
       },
       { status: 500 }

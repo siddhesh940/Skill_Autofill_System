@@ -1,14 +1,30 @@
-import { analyzeGitHubData, combineSkills, parseResumeText } from '@/lib/nlp';
+import { combineSkills, parseResumeText } from '@/lib/nlp';
+import { fetchCompleteGitHubProfile } from '@/services/github';
 import { NextRequest, NextResponse } from 'next/server';
+
+// Vercel serverless configuration
+export const maxDuration = 30;
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { resume_text, github_username } = body;
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
+    const { resume_text, github_username } = body as {
+      resume_text?: string;
+      github_username?: string;
+    };
 
     if (!resume_text && !github_username) {
       return NextResponse.json(
-        { error: 'Either resume_text or github_username is required' },
+        { error: 'Please provide resume text or GitHub username' },
         { status: 400 }
       );
     }
@@ -16,16 +32,28 @@ export async function POST(request: NextRequest) {
     // Parse resume if provided
     let resumeSkills = null;
     if (resume_text) {
-      resumeSkills = parseResumeText(resume_text);
+      try {
+        resumeSkills = parseResumeText(resume_text as string);
+      } catch (error) {
+        console.warn('Resume parsing failed:', error);
+        // Continue without resume skills
+      }
     }
 
-    // Analyze GitHub if provided
+    // Fetch and analyze GitHub if provided
     let githubData = null;
     if (github_username) {
       try {
-        githubData = await analyzeGitHubData(github_username);
+        const profile = await fetchCompleteGitHubProfile(github_username as string);
+        if (profile) {
+          githubData = {
+            skills: profile.skills.map(s => ({ name: s, category: 'technical', proficiency: 'intermediate' })),
+            repos: profile.repos,
+            languages: profile.topLanguages,
+          };
+        }
       } catch (error) {
-        console.warn('GitHub analysis failed:', error);
+        console.warn('GitHub analysis skipped:', error);
         // Continue without GitHub data
       }
     }
@@ -34,7 +62,12 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let skills: any[] = [];
     if (resumeSkills && githubData) {
-      skills = combineSkills(resumeSkills, githubData.skills, 'anonymous');
+      // Merge skills, preferring resume skills but adding GitHub skills
+      const skillNames = new Set(resumeSkills.map((s: { canonical?: string; skill?: string }) => s.canonical || s.skill));
+      skills = [
+        ...resumeSkills,
+        ...githubData.skills.filter((s: { name: string }) => !skillNames.has(s.name))
+      ];
     } else if (resumeSkills) {
       skills = resumeSkills;
     } else if (githubData) {
@@ -55,7 +88,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error analyzing profile:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Profile analysis could not be completed. Please try again.' },
       { status: 500 }
     );
   }

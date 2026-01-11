@@ -1,10 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 // Create GitHub issues from generated tasks
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { repo_owner, repo_name, issues } = body;
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
+    const { repo_owner, repo_name, issues } = body as {
+      repo_owner?: string;
+      repo_name?: string;
+      issues?: Array<{ title: string; body: string; labels?: string[] }>;
+    };
 
     if (!repo_owner || !repo_name) {
       return NextResponse.json(
@@ -111,7 +127,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Could not create GitHub issues. Please try again.',
       },
       { status: 500 }
     );

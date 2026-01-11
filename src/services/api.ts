@@ -1,45 +1,26 @@
 // API Service Layer for Skill Autofill System
 
+import { apiRequest as resilientApiRequest } from '@/lib/api-client';
 import type {
-  FullAnalysisResponse,
-  LearningRoadmap,
-  ParsedJobDescription,
-  SkillGapAnalysis,
-  UserSkillProfile,
+    FullAnalysisResponse,
+    LearningRoadmap,
+    ParsedJobDescription,
+    SkillGapAnalysis,
+    UserSkillProfile,
 } from '../types';
 
 const API_BASE = '/api';
 
-// Generic fetch wrapper with error handling
+// Generic fetch wrapper with error handling - uses resilient client
 async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<{ success: boolean; data?: T; error?: string }> {
-  try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-      ...options,
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return { 
-        success: false, 
-        error: result.error || `HTTP ${response.status}` 
-      };
-    }
-
-    return { success: true, data: result.data };
-  } catch (error) {
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Network error' 
-    };
-  }
+  return resilientApiRequest<T>(`${API_BASE}${endpoint}`, {
+    ...options,
+    timeout: 60000, // 60 second default timeout
+    retries: 2, // 2 retries by default
+  });
 }
 
 // =====================================================

@@ -1,7 +1,63 @@
 'use client';
 
-import { getPlatformErrorMessage, logPlatformError } from '@/lib/platform-utils';
 import { useRef, useState } from 'react';
+
+// Inline resilient upload function to avoid import issues
+async function uploadFileWithRetry<T>(
+  url: string,
+  file: File,
+  options: { timeout?: number; retries?: number } = {}
+): Promise<{ success: boolean; data?: T; error?: string }> {
+  const { timeout = 60000, retries = 1 } = options;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        return { success: true, data };
+      }
+      
+      // Don't retry client errors
+      if (response.status >= 400 && response.status < 500) {
+        return { success: false, error: data.error || 'Upload failed' };
+      }
+      
+      // Server error - retry if attempts remaining
+      if (attempt >= retries) {
+        return { success: false, error: data.error || 'Upload failed' };
+      }
+    } catch (error) {
+      clearTimeout(timeoutId);
+      
+      if (attempt >= retries) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return { success: false, error: 'Upload timed out. Please try again.' };
+        }
+        return { success: false, error: 'Connection issue. Please try again.' };
+      }
+    }
+    
+    // Wait before retry
+    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+  }
+  
+  return { success: false, error: 'Upload failed. Please try again.' };
+}
 
 interface ProfileInputProps {
   resumeText: string;
@@ -13,6 +69,18 @@ interface ProfileInputProps {
 interface ParseWarning {
   message: string;
   quality: 'good' | 'partial' | 'failed';
+}
+
+interface ParseResponse {
+  success?: boolean;
+  text?: string;
+  structured?: {
+    skills?: string[];
+  };
+  parseQuality?: string;
+  warnings?: string[];
+  error?: string;
+  suggestion?: string;
 }
 
 export default function ProfileInput({
@@ -33,16 +101,20 @@ export default function ProfileInput({
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate file before upload
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    // Validate file before upload - be more lenient
+    const maxSize = 8 * 1024 * 1024; // 8MB (matches server limit)
     if (file.size > maxSize) {
-      setUploadError('File is too large. Please use a file smaller than 10MB.');
+      setUploadError('File is too large (max 8MB). Please paste your resume text directly below.');
       return;
     }
 
+    // Be lenient with file types - check extension as fallback
     const allowedTypes = ['application/pdf', 'text/plain'];
-    if (!allowedTypes.includes(file.type)) {
-      setUploadError('Please upload a PDF or TXT file only.');
+    const fileExtension = file.name.toLowerCase().split('.').pop();
+    const isValidExtension = fileExtension === 'pdf' || fileExtension === 'txt';
+    
+    if (!allowedTypes.includes(file.type) && !isValidExtension) {
+      setUploadError('Please upload a PDF or TXT file.');
       return;
     }
 
@@ -52,56 +124,22 @@ export default function ProfileInput({
     setParseWarning(null);
     setExtractedSkills([]);
 
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
+    // Use resilient upload with timeout and retry
+    const result = await uploadFileWithRetry<ParseResponse>('/api/parse-pdf', file, {
+      timeout: 60000, // 60 second timeout for file uploads
+      retries: 1, // One retry for uploads
+    });
 
-      const response = await fetch('/api/parse-pdf', {
-        method: 'POST',
-        body: formData,
-      });
-
-      // Handle network errors specifically
-      if (!response) {
-        throw new Error('NETWORK_ERROR');
-      }
-
-      const data = await response.json();
-
-      // Handle failed parsing
-      if (!response.ok || data.parseQuality === 'failed') {
-        // Log technical details for debugging
-        console.error('File parse error:', {
-          status: response.status,
-          error: data.error,
-          filename: file.name,
-          fileSize: file.size,
-          fileType: file.type
-        });
-        
-        // Provide user-friendly error messages
-        let errorMessage = 'Could not read the file properly.';
-        
-        if (response.status === 413) {
-          errorMessage = 'File is too large to process.';
-        } else if (response.status >= 500) {
-          errorMessage = 'Server is having issues processing files.';
-        } else if (data.error?.includes('corrupted') || data.error?.includes('encrypted')) {
-          errorMessage = 'File appears to be corrupted or password-protected.';
-        } else if (data.error?.includes('image-based') || data.error?.includes('scanned')) {
-          errorMessage = 'This appears to be a scanned PDF. Text-based PDFs work better.';
-        }
-        
-        throw new Error(errorMessage);
-      }
-
+    if (result.success && result.data) {
+      const data = result.data;
+      
       // Handle successful or partial parsing
       if (data.text) {
         onResumeChange(data.text);
         setUploadedFileName(file.name);
 
         // Set extracted skills if available
-        if (data.structured?.skills?.length > 0) {
+        if (data.structured?.skills && data.structured.skills.length > 0) {
           setExtractedSkills(data.structured.skills);
         }
 
@@ -109,60 +147,22 @@ export default function ProfileInput({
         if (data.parseQuality === 'partial' || (data.warnings && data.warnings.length > 0)) {
           setParseWarning({
             message: data.warnings?.[0] || 'Some sections may not have been extracted correctly.',
-            quality: data.parseQuality || 'partial',
+            quality: (data.parseQuality as 'good' | 'partial' | 'failed') || 'partial',
           });
         }
       } else {
-        throw new Error('No readable text found in the file.');
+        // No text extracted - show friendly error
+        setUploadError(data.error || 'Could not extract text. Please paste your resume directly below.');
       }
-    } catch (error) {
-      // Log platform-aware error for debugging
-      logPlatformError(error, 'file-upload');
-      
-      // Set user-friendly error messages
-      let userMessage = 'File upload failed. Please paste your resume text directly below.';
-      
-      if (error instanceof Error) {
-        switch (error.message) {
-          case 'NETWORK_ERROR':
-          case 'Failed to fetch':
-            userMessage = getPlatformErrorMessage(
-              'Connection issue.',
-              'network'
-            ) + ' You can paste your resume text directly below.';
-            break;
-          case 'File is too large to process.':
-          case 'File appears to be corrupted or password-protected.':
-          case 'This appears to be a scanned PDF. Text-based PDFs work better.':
-          case 'No readable text found in the file.':
-            userMessage = getPlatformErrorMessage(
-              error.message,
-              'upload'
-            );
-            break;
-          default:
-            if (error.message.includes('fetch') || error.message.includes('network')) {
-              userMessage = getPlatformErrorMessage(
-                'Upload failed.',
-                'network'
-              ) + ' You can paste your resume text directly below.';
-            } else if (error.message.length < 100) {
-              userMessage = getPlatformErrorMessage(
-                error.message,
-                'upload'
-              );
-            }
-            break;
-        }
-      }
-      
-      setUploadError(userMessage);
-    } finally {
-      setIsUploading(false);
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+    } else {
+      // Upload failed - show user-friendly message
+      setUploadError(result.error || 'Upload failed. Please paste your resume text directly below.');
+    }
+
+    setIsUploading(false);
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 

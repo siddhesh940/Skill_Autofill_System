@@ -1,11 +1,12 @@
 'use client';
 
+import { resilientFetch } from '@/lib/api-client';
 import type {
-  FullAnalysisResponse,
-  LearningRoadmap,
-  ParsedJobDescription,
-  SkillGapAnalysis,
-  UserSkillProfile
+    FullAnalysisResponse,
+    LearningRoadmap,
+    ParsedJobDescription,
+    SkillGapAnalysis,
+    UserSkillProfile
 } from '@/types';
 import { useCallback, useState } from 'react';
 
@@ -49,48 +50,25 @@ export function useAnalysis(): UseAnalysisReturn {
 
   const extractJD = useCallback(async (jdText: string): Promise<ParsedJobDescription | null> => {
     setLoading(true);
-    try {
-      const response = await fetch('/api/extract-jd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jd_text: jdText }),
-      });
+    
+    const result = await resilientFetch<{ data: ParsedJobDescription }>('/api/extract-jd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jd_text: jdText }),
+      timeout: 30000,
+      retries: 2,
+    });
 
-      if (!response) {
-        throw new Error('NETWORK_ERROR');
-      }
-
-      const data = await response.json();
-      
-      if (!response.ok) {
-        console.error('JD extraction error:', { status: response.status, error: data.error });
-        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
-      }
-
-      setState(prev => ({ ...prev, jobData: data.data, isLoading: false }));
-      return data.data;
-    } catch (err) {
-      console.error('JD extraction failed:', err);
-      
-      let userMessage = 'Failed to process job description. Please try again.';
-      if (err instanceof Error) {
-        switch (err.message) {
-          case 'NETWORK_ERROR':
-          case 'Failed to fetch':
-            userMessage = 'Connection issue. Please check your internet and try again.';
-            break;
-          case 'SERVER_ERROR':
-            userMessage = 'Our servers are having issues. Please try again in a moment.';
-            break;
-          case 'VALIDATION_ERROR':
-            userMessage = 'Please check your job description and try again.';
-            break;
-        }
-      }
-      
-      setError(userMessage);
-      return null;
+    if (result.success && result.data) {
+      // Handle both wrapped and unwrapped response formats
+      const resultData = result.data as unknown as { data?: ParsedJobDescription } | ParsedJobDescription;
+      const data = 'data' in resultData && resultData.data ? resultData.data : resultData as ParsedJobDescription;
+      setState(prev => ({ ...prev, jobData: data, isLoading: false }));
+      return data;
     }
+    
+    setError(result.error || 'Could not process job description. Please try again.');
+    return null;
   }, []);
 
   const analyzeProfile = useCallback(async (
@@ -98,48 +76,25 @@ export function useAnalysis(): UseAnalysisReturn {
     githubUsername?: string
   ): Promise<UserSkillProfile | null> => {
     setLoading(true);
-    try {
-      const response = await fetch('/api/analyze-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resume_text: resumeText, github_username: githubUsername }),
-      });
+    
+    const result = await resilientFetch<{ data: UserSkillProfile }>('/api/analyze-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_text: resumeText, github_username: githubUsername }),
+      timeout: 30000,
+      retries: 2,
+    });
 
-      if (!response) {
-        throw new Error('NETWORK_ERROR');
-      }
-
-      const data = await response.json();
-      
-      if (!response.ok) {
-        console.error('Profile analysis error:', { status: response.status, error: data.error });
-        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
-      }
-
-      setState(prev => ({ ...prev, profileData: data.data, isLoading: false }));
-      return data.data;
-    } catch (err) {
-      console.error('Profile analysis failed:', err);
-      
-      let userMessage = 'Failed to analyze your profile. Please try again.';
-      if (err instanceof Error) {
-        switch (err.message) {
-          case 'NETWORK_ERROR':
-          case 'Failed to fetch':
-            userMessage = 'Connection issue. Please check your internet and try again.';
-            break;
-          case 'SERVER_ERROR':
-            userMessage = 'Our servers are having issues. Please try again in a moment.';
-            break;
-          case 'VALIDATION_ERROR':
-            userMessage = 'Please check your resume or GitHub username and try again.';
-            break;
-        }
-      }
-      
-      setError(userMessage);
-      return null;
+    if (result.success && result.data) {
+      // Handle both wrapped and unwrapped response formats
+      const resultData = result.data as unknown as { data?: UserSkillProfile } | UserSkillProfile;
+      const data = 'data' in resultData && resultData.data ? resultData.data : resultData as UserSkillProfile;
+      setState(prev => ({ ...prev, profileData: data, isLoading: false }));
+      return data;
     }
+    
+    setError(result.error || 'Could not analyze profile. Please try again.');
+    return null;
   }, []);
 
   const analyzeSkillGap = useCallback(async (
@@ -147,71 +102,52 @@ export function useAnalysis(): UseAnalysisReturn {
     userSkills: string[]
   ): Promise<SkillGapAnalysis | null> => {
     setLoading(true);
-    try {
-      const response = await fetch('/api/skill-gap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_data: jobData, user_skills: userSkills }),
-      });
+    
+    const result = await resilientFetch<{ data: SkillGapAnalysis }>('/api/skill-gap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_data: jobData, user_skills: userSkills }),
+      timeout: 30000,
+      retries: 2,
+    });
 
-      if (!response) {
-        throw new Error('NETWORK_ERROR');
-      }
-
-      const data = await response.json();
-      
-      if (!response.ok) {
-        console.error('Skill gap analysis error:', { status: response.status, error: data.error });
-        throw new Error(response.status >= 500 ? 'SERVER_ERROR' : 'VALIDATION_ERROR');
-      }
-
-      setState(prev => ({ ...prev, skillGap: data.data, isLoading: false }));
-      return data.data;
-    } catch (err) {
-      console.error('Skill gap analysis failed:', err);
-      
-      let userMessage = 'Failed to analyze skill gap. Please try again.';
-      if (err instanceof Error) {
-        switch (err.message) {
-          case 'NETWORK_ERROR':
-          case 'Failed to fetch':
-            userMessage = 'Connection issue. Please check your internet and try again.';
-            break;
-          case 'SERVER_ERROR':
-            userMessage = 'Our servers are having issues. Please try again in a moment.';
-            break;
-          case 'VALIDATION_ERROR':
-            userMessage = 'Please check your inputs and try again.';
-            break;
-        }
-      }
-      
-      setError(userMessage);
-      return null;
+    if (result.success && result.data) {
+      // Handle both wrapped and unwrapped response formats
+      const resultData = result.data as unknown as { data?: SkillGapAnalysis } | SkillGapAnalysis;
+      const data = 'data' in resultData && resultData.data ? resultData.data : resultData as SkillGapAnalysis;
+      setState(prev => ({ ...prev, skillGap: data, isLoading: false }));
+      return data;
     }
+    
+    setError(result.error || 'Could not analyze skill gap. Please try again.');
+    return null;
   }, []);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const generateRoadmap = useCallback(async (
     missingSkills: any[], 
     hoursPerWeek: number = 10
   ): Promise<LearningRoadmap | null> => {
     setLoading(true);
-    try {
-      const response = await fetch('/api/generate-roadmap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ missing_skills: missingSkills, available_hours_per_week: hoursPerWeek }),
-      });
+    
+    const result = await resilientFetch<{ data: LearningRoadmap }>('/api/generate-roadmap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ missing_skills: missingSkills, available_hours_per_week: hoursPerWeek }),
+      timeout: 30000,
+      retries: 2,
+    });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-
-      setState(prev => ({ ...prev, roadmap: data.data, isLoading: false }));
-      return data.data;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate roadmap');
-      return null;
+    if (result.success && result.data) {
+      // Handle both wrapped and unwrapped response formats
+      const resultData = result.data as unknown as { data?: LearningRoadmap } | LearningRoadmap;
+      const data = 'data' in resultData && resultData.data ? resultData.data : resultData as LearningRoadmap;
+      setState(prev => ({ ...prev, roadmap: data, isLoading: false }));
+      return data;
     }
+    
+    setError(result.error || 'Could not generate roadmap. Please try again.');
+    return null;
   }, []);
 
   const runFullAnalysis = useCallback(async (
@@ -221,31 +157,34 @@ export function useAnalysis(): UseAnalysisReturn {
     hoursPerWeek: number = 10
   ): Promise<FullAnalysisResponse | null> => {
     setLoading(true);
-    try {
-      const response = await fetch('/api/generate-all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jd_text: jdText,
-          resume_text: resumeText,
-          github_username: githubUsername,
-          available_hours_per_week: hoursPerWeek,
-        }),
-      });
+    
+    const result = await resilientFetch<{ data: FullAnalysisResponse }>('/api/generate-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jd_text: jdText,
+        resume_text: resumeText,
+        github_username: githubUsername,
+        available_hours_per_week: hoursPerWeek,
+      }),
+      timeout: 90000, // 90 seconds for full analysis
+      retries: 2,
+    });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-
+    if (result.success && result.data) {
+      // Handle both wrapped and unwrapped response formats
+      const resultData = result.data as unknown as { data?: FullAnalysisResponse } | FullAnalysisResponse;
+      const data = 'data' in resultData && resultData.data ? resultData.data : resultData as FullAnalysisResponse;
       setState(prev => ({ 
         ...prev, 
-        fullAnalysis: data.data, 
+        fullAnalysis: data, 
         isLoading: false 
       }));
-      return data.data;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to run full analysis');
-      return null;
+      return data;
     }
+    
+    setError(result.error || 'Could not complete analysis. Please try again.');
+    return null;
   }, []);
 
   const reset = useCallback(() => {

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 // Fetch public GitHub profile data
 export async function GET(request: NextRequest) {
   try {
@@ -8,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     if (!username) {
       return NextResponse.json(
-        { success: false, error: 'Username is required' },
+        { success: false, error: 'GitHub username is required' },
         { status: 400 }
       );
     }
@@ -22,7 +25,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch user data
+    // Fetch user data with timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    
     const userResponse = await fetch(`https://api.github.com/users/${username}`, {
       headers: {
         'Accept': 'application/vnd.github.v3+json',
@@ -30,7 +36,10 @@ export async function GET(request: NextRequest) {
           'Authorization': `token ${process.env.GITHUB_TOKEN}`,
         }),
       },
+      signal: controller.signal,
     });
+    
+    clearTimeout(timeout);
 
     if (!userResponse.ok) {
       if (userResponse.status === 404) {
@@ -121,7 +130,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Could not fetch GitHub profile. Please try again.',
       },
       { status: 500 }
     );

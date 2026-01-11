@@ -1,0 +1,27 @@
+{
+  "functions": {
+    "src/app/api/parse-pdf/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "src/app/api/generate-all/route.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "src/app/api/analyze-profile/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/extract-jd/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/skill-gap/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/generate-roadmap/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/github/**/*.ts": {
+      "maxDuration": 30
+    }
+  }
+}

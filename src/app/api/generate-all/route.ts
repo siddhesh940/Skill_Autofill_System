@@ -13,9 +13,41 @@ import {
 import { fetchCompleteGitHubProfile } from '@/services/github';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 60; // 60 seconds max execution time
+
+// Helper to safely execute a step with timeout
+async function safeExecute<T>(
+  fn: () => Promise<T> | T,
+  fallback: T,
+  timeoutMs: number = 10000
+): Promise<T> {
+  try {
+    const result = await Promise.race([
+      Promise.resolve(fn()),
+      new Promise<T>((_, reject) => 
+        setTimeout(() => reject(new Error('Step timeout')), timeoutMs)
+      )
+    ]);
+    return result;
+  } catch (error) {
+    console.warn('Step failed, using fallback:', error);
+    return fallback;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid request format', type: 'validation' },
+        { status: 400 }
+      );
+    }
+
     const {
       jd_text,
       jd_url,
@@ -23,78 +55,102 @@ export async function POST(request: NextRequest) {
       github_username,
       available_hours_per_week = 10,
       original_bullets = [],
-    } = body;
+    } = body as {
+      jd_text?: string;
+      jd_url?: string;
+      resume_text?: string;
+      github_username?: string;
+      available_hours_per_week?: number;
+      original_bullets?: string[];
+    };
 
-    // Enhanced input validation
-    const jdTrimmed = jd_text?.trim();
-    const resumeTrimmed = resume_text?.trim();
-    const githubTrimmed = github_username?.trim();
+    // Enhanced input validation - be lenient but require basics
+    const jdTrimmed = (jd_text || '').trim();
+    const resumeTrimmed = (resume_text || '').trim();
+    const githubTrimmed = (github_username || '').trim();
 
-    // Validate job description
+    // Validate job description - more flexible
     if (!jdTrimmed && !jd_url) {
       return NextResponse.json(
-        { error: 'Job description is required', type: 'validation' },
+        { error: 'Please provide a job description', type: 'validation' },
         { status: 400 }
       );
     }
 
-    if (jdTrimmed && jdTrimmed.length < 50) {
+    if (jdTrimmed && jdTrimmed.length < 30) {
       return NextResponse.json(
-        { error: 'Job description must be at least 50 characters', type: 'validation' },
+        { error: 'Job description is too short. Please add more details.', type: 'validation' },
         { status: 400 }
       );
     }
 
-    // Validate profile input
+    // Validate profile input - more flexible
     if (!resumeTrimmed && !githubTrimmed) {
       return NextResponse.json(
-        { error: 'Either resume text or GitHub username is required', type: 'validation' },
+        { error: 'Please provide your resume or GitHub username', type: 'validation' },
         { status: 400 }
       );
     }
 
-    if (resumeTrimmed && resumeTrimmed.length < 100) {
+    // Lower minimum for resume text
+    if (resumeTrimmed && resumeTrimmed.length < 50 && !githubTrimmed) {
       return NextResponse.json(
-        { error: 'Resume text must be at least 100 characters', type: 'validation' },
+        { error: 'Please add more resume details or a GitHub username', type: 'validation' },
         { status: 400 }
       );
     }
 
-    // Step 1: Extract Job Description
-    let rawJdText = jd_text;
+    // Step 1: Extract Job Description (with fallback)
+    let rawJdText = jd_text || '';
     if (jd_url && !jd_text) {
-      const { scrapeJobUrl } = await import('@/lib/nlp/jd-extractor');
-      rawJdText = await scrapeJobUrl(jd_url);
+      try {
+        const { scrapeJobUrl } = await import('@/lib/nlp/jd-extractor');
+        rawJdText = await safeExecute(() => scrapeJobUrl(jd_url), '', 15000);
+      } catch {
+        // Continue with empty if scraping fails
+        console.warn('Job URL scraping failed, using provided text');
+      }
     }
+    
     const parsedJob = extractJobDescription(rawJdText);
 
-    // Step 2: Analyze Profile  
+    // Step 2: Analyze Profile (with resilient GitHub fetching)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let userSkills: any[] = [];
     let githubData = null;
 
+    // Parse resume if provided
     if (resume_text) {
-      const resumeSkills = parseResumeText(resume_text);
-      // Transform to UserSkill-compatible format
-      userSkills = resumeSkills.map(s => ({
-        id: '',
-        user_id: 'anonymous',
-        skill_name: s.canonical || s.skill,
-        skill_category: s.category,
-        proficiency_level: s.proficiency || 'intermediate',
-        years_experience: s.yearsExperience || null,
-        source: 'resume',
-        confidence_score: s.confidence,
-        is_verified: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }));
+      try {
+        const resumeSkills = parseResumeText(resume_text);
+        // Transform to UserSkill-compatible format
+        userSkills = resumeSkills.map(s => ({
+          id: '',
+          user_id: 'anonymous',
+          skill_name: s.canonical || s.skill,
+          skill_category: s.category,
+          proficiency_level: s.proficiency || 'intermediate',
+          years_experience: s.yearsExperience || null,
+          source: 'resume',
+          confidence_score: s.confidence,
+          is_verified: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+      } catch (error) {
+        console.warn('Resume parsing error:', error);
+        // Continue without resume skills
+      }
     }
 
+    // Fetch GitHub data if provided (with timeout protection)
     if (github_username) {
       try {
-        // First fetch the complete GitHub profile
-        const githubProfile = await fetchCompleteGitHubProfile(github_username);
+        const githubProfile = await safeExecute(
+          () => fetchCompleteGitHubProfile(github_username),
+          null,
+          15000 // 15 second timeout for GitHub
+        );
         
         if (githubProfile) {
           // Transform to GitHubData format expected by analyzeGitHubData
@@ -147,18 +203,27 @@ export async function POST(request: NextRequest) {
           }
         }
       } catch (error) {
-        console.warn('GitHub analysis failed:', error);
+        // GitHub failures should not block analysis
+        console.warn('GitHub analysis skipped:', error);
       }
     }
 
-    // Step 3: Skill Gap Analysis
+    // Step 3: Skill Gap Analysis (always succeeds with defaults)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const skillGapResult = analyzeSkillGap(parsedJob, userSkills as any);
+    const skillGapResult = await safeExecute(
+      () => analyzeSkillGap(parsedJob, userSkills as any),
+      { match_percentage: 0, matching_skills: [], missing_skills: [], required_skills: [], user_skills: [] } as any,
+      5000
+    );
 
-    // Step 4: Generate Learning Roadmap
-    const roadmapResult = generateRoadmap(skillGapResult.missing_skills, available_hours_per_week);
+    // Step 4: Generate Learning Roadmap (with fallback)
+    const roadmapResult = await safeExecute(
+      () => generateRoadmap(skillGapResult.missing_skills || [], available_hours_per_week),
+      { phases: [], total_weeks: 0, weekly_hours: 0, milestones: [] } as any,
+      5000
+    );
 
-    // Step 5: Improve Resume
+    // Step 5: Improve Resume (with fallback)
     // Transform original_bullets to experience format
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const experienceData: any[] = original_bullets.length > 0 
@@ -172,34 +237,42 @@ export async function POST(request: NextRequest) {
           bullets: original_bullets 
         }]
       : [];
-    const resumeResult = improveResume(
-      experienceData,
-      parsedJob,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      userSkills.map((s: any) => s.skill_name || s.name || s.canonical || s),
-      resume_text // Pass the full resume text for enhanced analysis
+    
+    const resumeResult = await safeExecute(
+      () => improveResume(
+        experienceData,
+        parsedJob,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        userSkills.map((s: any) => s.skill_name || s.name || s.canonical || s),
+        resume_text || ''
+      ),
+      { improved_bullets: [], new_bullets: [], keywords_to_add: [], ats_score: 0, resume_gaps: [], bullet_improvements: [], ats_analysis: { present_keywords: [], missing_keywords: [], keyword_density_score: 0 }, readiness_score: { overall_score: 0, breakdown: { metrics_score: 0, action_verbs_score: 0, keywords_score: 0, format_score: 0 }, improvement_potential: [] } } as any,
+      5000
     );
 
-    // Step 6: Recommend Projects
-    const projectsResult = recommendProjects(
-      skillGapResult.missing_skills,
-      parsedJob,
-      3
+    // Step 6: Recommend Projects (with fallback)
+    const projectsResult = await safeExecute(
+      () => recommendProjects(skillGapResult.missing_skills || [], parsedJob, 3),
+      { projects: [], strategy: '' } as any,
+      5000
     );
 
-    // Step 7: Generate GitHub Tasks for top project
+    // Step 7: Generate GitHub Tasks (with fallback)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let githubTasksResult: { issues: any[] } = { issues: [] };
+    let githubTasksResult: any = { issues: [], repo_name: '', repo_description: '', labels: [], milestones: [] };
     if (projectsResult.projects && projectsResult.projects.length > 0) {
-      const tasksResult = generateGitHubTasks(projectsResult.projects[0]);
-      githubTasksResult = tasksResult || { issues: [] };
+      githubTasksResult = await safeExecute(
+        () => generateGitHubTasks(projectsResult.projects[0]) || githubTasksResult,
+        githubTasksResult,
+        5000
+      );
     }
 
-    // Step 8: Generate Portfolio Updates
-    const portfolioResult = generatePortfolioUpdates(
-      skillGapResult,
-      userSkills,
-      parsedJob
+    // Step 8: Generate Portfolio Updates (with fallback)
+    const portfolioResult = await safeExecute(
+      () => generatePortfolioUpdates(skillGapResult as any, userSkills, parsedJob),
+      { skills_to_add: [], skills_to_highlight: [], bio_update: null, headline_update: null, projects_to_feature: [] } as any,
+      5000
     );
 
     // Build response - use flexible approach to handle varying internal types
@@ -209,6 +282,13 @@ export async function POST(request: NextRequest) {
     const niceToHaveSkills = (parsedJob as any).nice_to_have_skills || [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const jobTitle = (parsedJob as any).job_title || (parsedJob as any).title || 'Software Developer';
+
+    // Await remaining results (these are already resolved)
+    const finalRoadmap = roadmapResult;
+    const finalResume = resumeResult;
+    const finalProjects = projectsResult;
+    const finalPortfolio = portfolioResult;
+    const finalSkillGap = skillGapResult;
     
     const response = {
       // Include parsed JD data for reference
@@ -232,13 +312,13 @@ export async function POST(request: NextRequest) {
         ats_keywords: parsedJob.ats_keywords || [],
       },
       skill_gap: {
-        match_percentage: skillGapResult.match_percentage || 0,
+        match_percentage: finalSkillGap.match_percentage || 0,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        matching_skills: (skillGapResult.matching_skills || []).map((s: any) => 
+        matching_skills: (finalSkillGap.matching_skills || []).map((s: any) => 
           typeof s === 'string' ? s : (s.skill_name || s.name || s)
         ),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        missing_skills: (skillGapResult.missing_skills || []).map((s: any) => ({
+        missing_skills: (finalSkillGap.missing_skills || []).map((s: any) => ({
           skill: typeof s === 'string' ? s : (s.skill_name || s.name || s),
           priority: (typeof s === 'object' ? s.priority : 'medium') || 'medium',
           estimated_hours: (typeof s === 'object' ? s.estimated_hours : 10) || 10,
@@ -247,7 +327,7 @@ export async function POST(request: NextRequest) {
       roadmap: (() => {
         // Build weekly_plan first to derive accurate stats
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const weeklyPlan = ((roadmapResult as any).weekly_plan || roadmapResult.phases || []).map((item: any, index: number) => {
+        const weeklyPlan = ((finalRoadmap as any).weekly_plan || finalRoadmap.phases || []).map((item: any, index: number) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const tasks = (item.tasks || []).map((t: any) => ({
             title: t.title,
@@ -286,14 +366,14 @@ export async function POST(request: NextRequest) {
       })(),
       resume_suggestions: {
         // New enhanced fields for redesigned Resume tab
-        resume_gaps: resumeResult.resume_gaps || [],
-        bullet_improvements: resumeResult.bullet_improvements || [],
-        ats_analysis: resumeResult.ats_analysis || {
+        resume_gaps: finalResume.resume_gaps || [],
+        bullet_improvements: finalResume.bullet_improvements || [],
+        ats_analysis: finalResume.ats_analysis || {
           present_keywords: [],
           missing_keywords: parsedJob.ats_keywords || [],
           keyword_density_score: 0,
         },
-        readiness_score: resumeResult.readiness_score || {
+        readiness_score: finalResume.readiness_score || {
           overall_score: 0,
           breakdown: {
             metrics_score: 0,
@@ -305,17 +385,17 @@ export async function POST(request: NextRequest) {
         },
         // Legacy fields for backward compatibility
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        improved_bullets: (resumeResult.improved_bullets || []).map((b: any) => ({
+        improved_bullets: (finalResume.improved_bullets || []).map((b: any) => ({
           original: b.original || '',
           improved: b.improved || b.text || '',
           keywords_added: b.keywords_added || [],
         })),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ats_keywords: (resumeResult as any).ats_keywords || parsedJob.ats_keywords || [],
+        ats_keywords: (finalResume as any).ats_keywords || parsedJob.ats_keywords || [],
       },
       recommended_projects: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        projects: (projectsResult.projects || []).map((p: any) => ({
+        projects: (finalProjects.projects || []).map((p: any) => ({
           name: p.title || p.name,
           description: p.description || '',
           tech_stack: p.tech_stack || [],
@@ -329,9 +409,9 @@ export async function POST(request: NextRequest) {
       },
       github_tasks: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        repo_name: (githubTasksResult as any).repo_name || projectsResult.projects?.[0]?.title || 'skill-building-project',
+        repo_name: (githubTasksResult as any).repo_name || finalProjects.projects?.[0]?.title || 'skill-building-project',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        repo_description: (githubTasksResult as any).repo_description || projectsResult.projects?.[0]?.description || 'A project to build and demonstrate skills',
+        repo_description: (githubTasksResult as any).repo_description || finalProjects.projects?.[0]?.description || 'A project to build and demonstrate skills',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         issues: (githubTasksResult.issues || []).map((i: any) => ({
           title: i.title,
@@ -355,15 +435,15 @@ export async function POST(request: NextRequest) {
       },
       portfolio_updates: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        skills_to_add: (portfolioResult.skills_to_add || []).map((s: any) => ({
+        skills_to_add: (finalPortfolio.skills_to_add || []).map((s: any) => ({
           name: s.name,
           category: s.category || 'technical',
           proficiency: s.proficiency || s.level,
         })),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        bio_suggestion: (portfolioResult as any).bio_suggestion || (portfolioResult as any).bio_update || null,
+        bio_suggestion: (finalPortfolio as any).bio_suggestion || (finalPortfolio as any).bio_update || null,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        headline_suggestion: (portfolioResult as any).headline_suggestion || (portfolioResult as any).headline_update || null,
+        headline_suggestion: (finalPortfolio as any).headline_suggestion || (finalPortfolio as any).headline_update || null,
       },
     };
 
@@ -372,17 +452,16 @@ export async function POST(request: NextRequest) {
       data: response,
     });
   } catch (error) {
-    // Log detailed error for debugging
+    // Log for debugging but never expose details to user
     console.error('Error in generate-all:', {
-      error: error instanceof Error ? error.message : error,
-      stack: error instanceof Error ? error.stack : undefined,
+      error: error instanceof Error ? error.message : 'Unknown error',
       timestamp: new Date().toISOString()
     });
     
-    // Return user-friendly error message
+    // Always return user-friendly message
     return NextResponse.json(
       { 
-        error: 'Something went wrong while processing your request. Please try again.', 
+        error: 'Analysis could not be completed. Please try again.',
         type: 'server'
       },
       { status: 500 }

@@ -13,7 +13,7 @@ interface ErrorMessageProps {
 export default function ErrorMessage({ 
   message, 
   onDismiss, 
-  type = 'error',
+  type = 'warning', // Default to warning for less alarming UX
   showDismiss = true,
   className = '' 
 }: ErrorMessageProps) {
@@ -28,21 +28,22 @@ export default function ErrorMessage({
 
   if (!isVisible) return null;
 
+  // Use softer colors for better UX
   const typeStyles = {
     error: {
-      container: 'bg-red-500/10 border-red-500/30 text-red-400',
-      icon: 'text-red-400',
-      subtitle: 'text-red-300'
+      container: 'bg-amber-500/10 border-amber-500/30 text-amber-300',
+      icon: 'text-amber-400',
+      subtitle: 'text-amber-200/70'
     },
     warning: {
-      container: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400',
+      container: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300',
       icon: 'text-yellow-400',
-      subtitle: 'text-yellow-300'
+      subtitle: 'text-yellow-200/70'
     },
     info: {
-      container: 'bg-blue-500/10 border-blue-500/30 text-blue-400',
+      container: 'bg-blue-500/10 border-blue-500/30 text-blue-300',
       icon: 'text-blue-400',
-      subtitle: 'text-blue-300'
+      subtitle: 'text-blue-200/70'
     }
   };
 
@@ -60,7 +61,7 @@ export default function ErrorMessage({
         );
       default:
         return (
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         );
     }
   };
@@ -75,11 +76,9 @@ export default function ErrorMessage({
         </div>
         <div className="flex-1">
           <p className="font-medium">{message}</p>
-          {type === 'error' && (
-            <p className={`mt-1 text-xs ${styles.subtitle}`}>
-              If the problem persists, try refreshing the page.
-            </p>
-          )}
+          <p className={`mt-1 text-xs ${styles.subtitle}`}>
+            This usually resolves by trying again.
+          </p>
         </div>
         {showDismiss && (
           <button

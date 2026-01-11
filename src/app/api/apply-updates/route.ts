@@ -1,12 +1,24 @@
 import { createClient } from '@/lib/supabase/server';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 // Apply updates to GitHub and/or Portfolio
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   
   try {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
     const { 
       analysis_id,
       apply_to_github = false,
@@ -14,7 +26,14 @@ export async function POST(request: NextRequest) {
       apply_to_portfolio = false,
       github_tasks,
       portfolio_updates 
-    } = body;
+    } = body as {
+      analysis_id?: string;
+      apply_to_github?: boolean;
+      github_repo_name?: string;
+      apply_to_portfolio?: boolean;
+      github_tasks?: { issues?: Array<{ title: string; body: string; labels?: string[] }> };
+      portfolio_updates?: { skills_to_add?: Array<{ name: string; category: string; proficiency?: string }>; bio_suggestion?: string; headline_suggestion?: string };
+    };
 
     const results: {
       github_issues_created?: number;
@@ -83,8 +102,9 @@ export async function POST(request: NextRequest) {
           results.errors.push('User not authenticated');
         } else {
           // Update user profile with new skills
-          if (portfolio_updates.skills_to_add?.length > 0) {
-            for (const skill of portfolio_updates.skills_to_add) {
+          const skillsToAdd = portfolio_updates.skills_to_add || [];
+          if (skillsToAdd.length > 0) {
+            for (const skill of skillsToAdd) {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               await (supabase as any).from('user_skills').upsert({
                 user_id: user.id,
@@ -160,7 +180,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Could not apply updates. Please try again.',
       },
       { status: 500 }
     );

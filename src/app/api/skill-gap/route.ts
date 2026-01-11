@@ -2,9 +2,21 @@ import { analyzeSkillGap, summarizeSkillGap } from '@/lib/nlp';
 import type { ParsedJobDescription, UserSkill } from '@/types';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel serverless configuration
+export const maxDuration = 30;
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid request format' },
+        { status: 400 }
+      );
+    }
+    
     const { parsed_job, user_skills } = body as {
       parsed_job: ParsedJobDescription;
       user_skills: UserSkill[];
@@ -12,14 +24,14 @@ export async function POST(request: NextRequest) {
 
     if (!parsed_job) {
       return NextResponse.json(
-        { error: 'parsed_job is required' },
+        { error: 'Job description data is required' },
         { status: 400 }
       );
     }
 
     if (!user_skills || !Array.isArray(user_skills)) {
       return NextResponse.json(
-        { error: 'user_skills array is required' },
+        { error: 'Skills data is required' },
         { status: 400 }
       );
     }
@@ -40,7 +52,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error analyzing skill gap:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Skill analysis could not be completed. Please try again.' },
       { status: 500 }
     );
   }

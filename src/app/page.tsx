@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import JDInput from '@/components/JDInput';
 import LoadingState from '@/components/LoadingState';
 import ProfileInput from '@/components/ProfileInput';
-import { logPlatformError } from '@/lib';
+import { resilientFetch } from '@/lib/api-client';
 import { FullAnalysisResponse } from '@/types';
 import { useState } from 'react';
 
@@ -19,106 +19,59 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
-    // Enhanced input validation
+    // Enhanced input validation - more lenient
     const jdTrimmed = jdText.trim();
     const resumeTrimmed = resumeText.trim();
     const githubTrimmed = githubUsername.trim();
 
-    // Validate job description
+    // Validate job description - lowered threshold
     if (!jdTrimmed) {
       setError('Please add a job description before analyzing.');
       return;
     }
 
-    if (jdTrimmed.length < 50) {
-      setError('Please provide a more detailed job description (at least 50 characters).');
+    if (jdTrimmed.length < 30) {
+      setError('Please provide a bit more detail in the job description.');
       return;
     }
 
-    // Validate profile data
+    // Validate profile data - more flexible
     if (!resumeTrimmed && !githubTrimmed) {
-      setError('Please add job description and resume before analyzing.');
+      setError('Please add your resume or GitHub username before analyzing.');
       return;
     }
 
-    if (resumeTrimmed && resumeTrimmed.length < 100) {
-      setError('Please provide a more detailed resume (at least 100 characters) or GitHub username.');
+    // Lowered resume minimum
+    if (resumeTrimmed && resumeTrimmed.length < 50 && !githubTrimmed) {
+      setError('Please add more resume details or include a GitHub username.');
       return;
     }
 
     setError(null);
     setStep('loading');
 
-    try {
-      const response = await fetch('/api/generate-all', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          jd_text: jdTrimmed,
-          resume_text: resumeTrimmed || undefined,
-          github_username: githubTrimmed || undefined,
-          available_hours_per_week: 10,
-        }),
-      });
+    // Use resilient fetch with automatic retries and timeout
+    const result = await resilientFetch<FullAnalysisResponse>('/api/generate-all', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jd_text: jdTrimmed,
+        resume_text: resumeTrimmed || undefined,
+        github_username: githubTrimmed || undefined,
+        available_hours_per_week: 10,
+      }),
+      timeout: 90000, // 90 seconds for full analysis
+      retries: 2, // Retry twice on failure
+    });
 
-      // Handle network errors
-      if (!response) {
-        throw new Error('NETWORK_ERROR');
-      }
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        // Log technical details for debugging
-        console.error('API Error:', {
-          status: response.status,
-          statusText: response.statusText,
-          error: data.error,
-          url: response.url
-        });
-        
-        // Provide user-friendly error messages
-        if (response.status >= 400 && response.status < 500) {
-          throw new Error('VALIDATION_ERROR');
-        } else if (response.status >= 500) {
-          throw new Error('SERVER_ERROR');
-        }
-        
-        throw new Error('UNKNOWN_ERROR');
-      }
-
-      setResults(data.data);
+    if (result.success && result.data) {
+      setResults(result.data);
       setStep('results');
-    } catch (err) {
-      // Log platform-aware error for debugging
-      logPlatformError(err, 'main-analysis');
-      
-      // Set user-friendly error messages
-      let userMessage = 'Something went wrong on our side. Please try again in a moment.';
-      
-      if (err instanceof Error) {
-        switch (err.message) {
-          case 'NETWORK_ERROR':
-          case 'Failed to fetch':
-            userMessage = 'Unable to connect. Please check your internet connection and try again.';
-            break;
-          case 'VALIDATION_ERROR':
-            userMessage = 'Please check your inputs and try again.';
-            break;
-          case 'SERVER_ERROR':
-            userMessage = 'Our servers are having issues. Please try again in a moment.';
-            break;
-          default:
-            if (err.message.includes('fetch')) {
-              userMessage = 'Connection issue. Please try again.';
-            }
-            break;
-        }
-      }
-      
-      setError(userMessage);
+    } else {
+      // User-friendly error - no technical details
+      setError(result.error || 'Analysis could not be completed. Please try again.');
       setStep('input');
     }
   };
@@ -204,24 +157,24 @@ export default function HomePage() {
                 onClick={handleAnalyze}
                 disabled={
                   !jdText.trim() || 
-                  jdText.trim().length < 50 || 
+                  jdText.trim().length < 30 || 
                   (!resumeText.trim() && !githubUsername.trim()) || 
-                  (!!resumeText.trim() && resumeText.trim().length < 100 && !githubUsername.trim())
+                  (!!resumeText.trim() && resumeText.trim().length < 50 && !githubUsername.trim())
                 }
                 className="btn-primary text-lg px-10 py-4 animate-pulse-glow disabled:animate-none disabled:opacity-50 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/30 transition-shadow"
               >
                 🚀 Analyze &amp; Generate
               </button>
               <p className="mt-3 text-xs text-slate-500">Takes about 10-15 seconds</p>
-              {/* Validation hints */}
-              {(!jdText.trim() || jdText.trim().length < 50) && (
-                <p className="mt-2 text-xs text-yellow-400">Please add a detailed job description (50+ characters)</p>
+              {/* Validation hints - more lenient thresholds */}
+              {(!jdText.trim() || jdText.trim().length < 30) && (
+                <p className="mt-2 text-xs text-yellow-400">Please add a job description</p>
               )}
-              {(!resumeText.trim() && !githubUsername.trim()) && jdText.trim().length >= 50 && (
+              {(!resumeText.trim() && !githubUsername.trim()) && jdText.trim().length >= 30 && (
                 <p className="mt-2 text-xs text-yellow-400">Please add resume text or GitHub username</p>
               )}
-              {resumeText.trim() && resumeText.trim().length < 100 && !githubUsername.trim() && (
-                <p className="mt-2 text-xs text-yellow-400">Resume needs more detail (100+ characters) or add GitHub username</p>
+              {resumeText.trim() && resumeText.trim().length < 50 && !githubUsername.trim() && (
+                <p className="mt-2 text-xs text-yellow-400">Add more resume details or include GitHub username</p>
               )}
             </div>
           </div>
